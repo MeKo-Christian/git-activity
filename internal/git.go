@@ -8,9 +8,7 @@ import (
 	"time"
 
 	git "github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
-	"github.com/go-git/go-git/v5/plumbing/storer"
 	"gonum.org/v1/plot"
 	"gonum.org/v1/plot/plotter"
 	"gonum.org/v1/plot/vg"
@@ -189,111 +187,55 @@ func GetMultiRepoName(repoPaths []string) string {
 	return strings.Join(names, "_and_")
 }
 
-type ModificationCache struct {
-	timestamps map[string]time.Time
-}
-
-func NewModificationCache() *ModificationCache {
-	return &ModificationCache{
-		timestamps: make(map[string]time.Time),
-	}
-}
-
-func (mc *ModificationCache) Get(fileName string, commitHash plumbing.Hash) (time.Time, bool) {
-	key := fmt.Sprintf("%s:%s", commitHash.String(), fileName)
-	t, exists := mc.timestamps[key]
-	return t, exists
-}
-
-func (mc *ModificationCache) Set(fileName string, commitHash plumbing.Hash, timestamp time.Time) {
-	key := fmt.Sprintf("%s:%s", commitHash.String(), fileName)
-	mc.timestamps[key] = timestamp
-}
-
 func AnalyzeLinesInRange(repoPath string, start, end time.Time) (*CommitActivity, error) {
 	activity := &CommitActivity{}
-	cache := NewModificationCache()
 
-	// Open the Git repository
 	repo, err := git.PlainOpen(repoPath)
 	if err != nil {
 		return nil, fmt.Errorf("could not open repository: %w", err)
 	}
 
-	// Get the repository head
 	ref, err := repo.Head()
 	if err != nil {
 		return nil, fmt.Errorf("could not get repository head: %w", err)
 	}
 
-	// Get the commit history
 	commitIter, err := repo.Log(&git.LogOptions{From: ref.Hash()})
 	if err != nil {
 		return nil, fmt.Errorf("could not retrieve commits: %w", err)
 	}
 
-	// Iterate through the commits
 	err = commitIter.ForEach(func(c *object.Commit) error {
-		// skip commit if before start
-		if !start.IsZero() && c.Author.When.Before(start) {
-			return nil
+		commitTime := c.Author.When
+
+		// Filter commits based on date range
+		if (!start.IsZero() && commitTime.Before(start)) || (!end.IsZero() && commitTime.After(end)) {
+			return nil // Skip this commit
 		}
 
-		// get files in commit
-		files, err := c.Files()
+		// Get the diff stats for the commit
+		stats, err := c.Stats()
 		if err != nil {
-			return fmt.Errorf("could not get files for commit: %w", err)
+			return fmt.Errorf("could not get diff stats: %w", err)
 		}
 
-		// iterate through files
-		err = files.ForEach(func(file *object.File) error {
-			// Check cache first
-			lastModTime, cached := cache.Get(file.Name, c.Hash)
-			if !cached {
-				lastModTime, err = getLastModificationTime(repo, file.Name, c.Hash)
-				if err != nil {
-					return fmt.Errorf("could not get last modification time for file %s: %w", file.Name, err)
-				}
-				cache.Set(file.Name, c.Hash, lastModTime)
-			}
-
-			// Filter by the provided date range
-			if (!start.IsZero() && lastModTime.Before(start)) || (!end.IsZero() && lastModTime.After(end)) {
-				return nil // Skip this file
-			}
-
-			// Get diff stats for this commit
-			stats, err := c.Stats()
-			if err != nil {
-				return fmt.Errorf("could not get diff stats: %w", err)
-			}
-
-			// Aggregate added and deleted lines for the file
-			added, deleted := 0, 0
-			for _, stat := range stats {
-				if stat.Name == file.Name {
-					added += stat.Addition
-					deleted += stat.Deletion
-				}
-			}
-
-			// Increment activity data
-			weekday := lastModTime.Weekday()
-			hour := lastModTime.Hour()
-			month := lastModTime.Month() - 1
-			_, week := lastModTime.ISOWeek()
-
-			activity.Weekdays[int(weekday)] += added + deleted
-			activity.Hours[hour] += added + deleted
-			activity.Months[int(month)] += added + deleted
-			activity.Weeks[week] += added + deleted
-
-			return nil
-		})
-
-		if err != nil {
-			return fmt.Errorf("error processing files in commit: %w", err)
+		// Aggregate added and deleted lines
+		added, deleted := 0, 0
+		for _, stat := range stats {
+			added += stat.Addition
+			deleted += stat.Deletion
 		}
+
+		// Increment activity data
+		weekday := commitTime.Weekday()
+		hour := commitTime.Hour()
+		month := commitTime.Month() - 1
+		_, week := commitTime.ISOWeek()
+
+		activity.Weekdays[int(weekday)] += added + deleted
+		activity.Hours[hour] += added + deleted
+		activity.Months[int(month)] += added + deleted
+		activity.Weeks[week] += added + deleted
 
 		return nil
 	})
@@ -303,31 +245,6 @@ func AnalyzeLinesInRange(repoPath string, start, end time.Time) (*CommitActivity
 	}
 
 	return activity, nil
-}
-
-func getLastModificationTime(repo *git.Repository, fileName string, currentCommit plumbing.Hash) (time.Time, error) {
-	// Retrieve the commit log for the file
-	logIter, err := repo.Log(&git.LogOptions{
-		FileName: &fileName,
-		From:     currentCommit,
-	})
-	if err != nil {
-		return time.Time{}, fmt.Errorf("could not retrieve log for file %s: %w", fileName, err)
-	}
-
-	// Iterate through the log to find the latest commit for this file
-	var lastModTime time.Time
-	err = logIter.ForEach(func(commit *object.Commit) error {
-		lastModTime = commit.Author.When
-		// Stop after the first (latest) commit
-		return storer.ErrStop
-	})
-
-	if err != nil && err != storer.ErrStop {
-		return time.Time{}, fmt.Errorf("could not iterate through log for file %s: %w", fileName, err)
-	}
-
-	return lastModTime, nil
 }
 
 func AnalyzeRepositories(repoPaths []string, start, end time.Time, mode string) (string, *CombinedCommitActivity) {
