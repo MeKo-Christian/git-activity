@@ -9,10 +9,9 @@ import (
 
 	git "github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/object"
-	"gonum.org/v1/plot"
-	"gonum.org/v1/plot/plotter"
-	"gonum.org/v1/plot/vg"
 )
+
+type DeveloperAliases map[string]string
 
 type RepoCommitActivity struct {
 	RepoName string
@@ -28,29 +27,87 @@ func (cca *CombinedCommitActivity) Add(repoName string, activity *CommitActivity
 }
 
 type CommitActivity struct {
-	Weekdays [7]int
-	Hours    [24]int
-	Months   [12]int
-	Weeks    [53]int
+	Weekdays map[string][]int // Developer -> Weekday activity
+	Hours    map[string][]int // Developer -> Hour activity
+	Months   map[string][]int // Developer -> Month activity
+	Weeks    map[string][]int // Developer -> Week activity
+}
+
+func NewCommitActivity() *CommitActivity {
+	return &CommitActivity{
+		Weekdays: make(map[string][]int),
+		Hours:    make(map[string][]int),
+		Months:   make(map[string][]int),
+		Weeks:    make(map[string][]int),
+	}
+}
+
+func (ca *CommitActivity) AddActivity(developer string, weekday, hour, month, week, value int) {
+	if _, exists := ca.Weekdays[developer]; !exists {
+		ca.Weekdays[developer] = make([]int, 7)
+	}
+	ca.Weekdays[developer][weekday] += value
+
+	if _, exists := ca.Hours[developer]; !exists {
+		ca.Hours[developer] = make([]int, 24)
+	}
+	ca.Hours[developer][hour] += value
+
+	if _, exists := ca.Months[developer]; !exists {
+		ca.Months[developer] = make([]int, 12)
+	}
+	ca.Months[developer][month] += value
+
+	if _, exists := ca.Weeks[developer]; !exists {
+		ca.Weeks[developer] = make([]int, 53)
+	}
+	ca.Weeks[developer][week] += value
 }
 
 func (ca *CommitActivity) Combine(other *CommitActivity) {
-	for i := 0; i < len(ca.Weekdays); i++ {
-		ca.Weekdays[i] += other.Weekdays[i]
+	// Combine Weekdays
+	for developer, data := range other.Weekdays {
+		if _, exists := ca.Weekdays[developer]; !exists {
+			ca.Weekdays[developer] = make([]int, len(data))
+		}
+		for i, value := range data {
+			ca.Weekdays[developer][i] += value
+		}
 	}
-	for i := 0; i < len(ca.Hours); i++ {
-		ca.Hours[i] += other.Hours[i]
+
+	// Combine Hours
+	for developer, data := range other.Hours {
+		if _, exists := ca.Hours[developer]; !exists {
+			ca.Hours[developer] = make([]int, len(data))
+		}
+		for i, value := range data {
+			ca.Hours[developer][i] += value
+		}
 	}
-	for i := 0; i < len(ca.Months); i++ {
-		ca.Months[i] += other.Months[i]
+
+	// Combine Months
+	for developer, data := range other.Months {
+		if _, exists := ca.Months[developer]; !exists {
+			ca.Months[developer] = make([]int, len(data))
+		}
+		for i, value := range data {
+			ca.Months[developer][i] += value
+		}
 	}
-	for i := 0; i < len(ca.Weeks); i++ {
-		ca.Weeks[i] += other.Weeks[i]
+
+	// Combine Weeks
+	for developer, data := range other.Weeks {
+		if _, exists := ca.Weeks[developer]; !exists {
+			ca.Weeks[developer] = make([]int, len(data))
+		}
+		for i, value := range data {
+			ca.Weeks[developer][i] += value
+		}
 	}
 }
 
-func AnalyzeCommits(repoPath string) (*CommitActivity, error) {
-	activity := &CommitActivity{}
+func AnalyzeCommits(repoPath string, aliases DeveloperAliases, mode string) (*CommitActivity, error) {
+	activity := NewCommitActivity()
 
 	// Open the Git repository
 	repo, err := git.PlainOpen(repoPath)
@@ -72,21 +129,39 @@ func AnalyzeCommits(repoPath string) (*CommitActivity, error) {
 	// Iterate through the commits
 	err = commitIter.ForEach(func(c *object.Commit) error {
 		commitTime := c.Author.When
+		authorEmail := strings.ToLower(c.Author.Email)
 
-		// Weekday and hour
-		weekday := commitTime.Weekday()
+		// Map alias to developer name
+		developer, exists := aliases[authorEmail]
+		if !exists {
+			developer = "Unknown"
+		}
+
+		// Weekday, hour, month, and week
+		weekday := int(commitTime.Weekday())
 		hour := commitTime.Hour()
-
-		// Month (0 = January, 11 = December)
-		month := commitTime.Month() - 1 // `time.Month` is 1-based
-
-		// Week number (0 = first week of year)
+		month := int(commitTime.Month()) - 1 // `time.Month` is 1-based
 		_, week := commitTime.ISOWeek()
 
-		activity.Weekdays[int(weekday)]++
-		activity.Hours[hour]++
-		activity.Months[int(month)]++
-		activity.Weeks[week]++
+		if mode == "commits" {
+			// Increment commit count for the developer
+			activity.AddActivity(developer, weekday, hour, month, week, 1)
+		} else if mode == "lines" {
+			// Aggregate changed lines
+			stats, err := c.Stats()
+			if err != nil {
+				return fmt.Errorf("could not get diff stats: %w", err)
+			}
+
+			// Sum added and deleted lines
+			lineChanges := 0
+			for _, stat := range stats {
+				lineChanges += stat.Addition + stat.Deletion
+			}
+
+			// Increment line change count for the developer
+			activity.AddActivity(developer, weekday, hour, month, week, lineChanges)
+		}
 
 		return nil
 	})
@@ -97,8 +172,8 @@ func AnalyzeCommits(repoPath string) (*CommitActivity, error) {
 	return activity, nil
 }
 
-func AnalyzeCommitsInRange(repoPath string, start, end time.Time) (*CommitActivity, error) {
-	activity := &CommitActivity{}
+func AnalyzeCommitsInRange(repoPath string, start, end time.Time, aliases DeveloperAliases) (*CommitActivity, error) {
+	activity := NewCommitActivity()
 
 	repo, err := git.PlainOpen(repoPath)
 	if err != nil {
@@ -117,23 +192,30 @@ func AnalyzeCommitsInRange(repoPath string, start, end time.Time) (*CommitActivi
 
 	err = commitIter.ForEach(func(c *object.Commit) error {
 		commitTime := c.Author.When
+		authorEmail := strings.ToLower(c.Author.Email)
+
+		// Map alias to developer name
+		developer, exists := aliases[authorEmail]
+		if !exists {
+			developer = "Unknown"
+		}
 
 		// Filter commits based on date range
 		if (!start.IsZero() && commitTime.Before(start)) || (!end.IsZero() && commitTime.After(end)) {
-			return nil // Skip this commit
+			return nil
 		}
 
-		// Process the commit
+		// Weekday and hour
 		weekday := commitTime.Weekday()
 		hour := commitTime.Hour()
+
+		// Month (0 = January, 11 = December)
 		month := commitTime.Month() - 1
+
+		// Week number (0 = first week of year)
 		_, week := commitTime.ISOWeek()
 
-		activity.Weekdays[int(weekday)]++
-		activity.Hours[hour]++
-		activity.Months[int(month)]++
-		activity.Weeks[week]++
-
+		activity.AddActivity(developer, int(weekday), hour, int(month), week, 1)
 		return nil
 	})
 
@@ -142,35 +224,6 @@ func AnalyzeCommitsInRange(repoPath string, start, end time.Time) (*CommitActivi
 	}
 
 	return activity, nil
-}
-
-// CreateBarChart creates a bar chart from the given data
-func CreateBarChart(values []int, labels []string, title, filename string) error {
-	pts := make(plotter.Values, len(values))
-	for i, v := range values {
-		pts[i] = float64(v)
-	}
-
-	p := plot.New()
-	p.Title.Text = title
-	bar, err := plotter.NewBarChart(pts, vg.Points(20))
-	if err != nil {
-		return fmt.Errorf("could not create bar chart: %w", err)
-	}
-
-	bar.LineStyle.Width = vg.Length(0)
-	bar.Color = colorPalette[1%len(colorPalette)]
-
-	p.Add(bar)
-	p.NominalX(labels...)
-
-	// Save the chart to the specified file format (determined by file extension)
-	err = p.Save(10*vg.Inch, 4*vg.Inch, filename)
-	if err != nil {
-		return fmt.Errorf("could not save chart: %w", err)
-	}
-
-	return nil
 }
 
 // GetRepoName extracts the repository name from its path
@@ -187,8 +240,8 @@ func GetMultiRepoName(repoPaths []string) string {
 	return strings.Join(names, "_and_")
 }
 
-func AnalyzeLinesInRange(repoPath string, start, end time.Time) (*CommitActivity, error) {
-	activity := &CommitActivity{}
+func AnalyzeLinesInRange(repoPath string, start, end time.Time, aliases DeveloperAliases) (*CommitActivity, error) {
+	activity := NewCommitActivity()
 
 	repo, err := git.PlainOpen(repoPath)
 	if err != nil {
@@ -207,6 +260,13 @@ func AnalyzeLinesInRange(repoPath string, start, end time.Time) (*CommitActivity
 
 	err = commitIter.ForEach(func(c *object.Commit) error {
 		commitTime := c.Author.When
+		authorEmail := strings.ToLower(c.Author.Email)
+
+		// Map alias to developer name
+		developer, exists := aliases[authorEmail]
+		if !exists {
+			developer = "Unknown"
+		}
 
 		// Filter commits based on date range
 		if (!start.IsZero() && commitTime.Before(start)) || (!end.IsZero() && commitTime.After(end)) {
@@ -226,16 +286,16 @@ func AnalyzeLinesInRange(repoPath string, start, end time.Time) (*CommitActivity
 			deleted += stat.Deletion
 		}
 
-		// Increment activity data
-		weekday := commitTime.Weekday()
+		// Increment activity data per developer
+		weekday := int(commitTime.Weekday())
 		hour := commitTime.Hour()
-		month := commitTime.Month() - 1
+		month := int(commitTime.Month()) - 1 // Month() is 1-based, adjust to 0-based
 		_, week := commitTime.ISOWeek()
 
-		activity.Weekdays[int(weekday)] += added + deleted
-		activity.Hours[hour] += added + deleted
-		activity.Months[int(month)] += added + deleted
-		activity.Weeks[week] += added + deleted
+		// Add activity
+		if weekday >= 0 && weekday < 7 && hour >= 0 && hour < 24 && month >= 0 && month < 12 && week >= 0 && week < 53 {
+			activity.AddActivity(developer, weekday, hour, month, week, added+deleted)
+		}
 
 		return nil
 	})
@@ -247,7 +307,7 @@ func AnalyzeLinesInRange(repoPath string, start, end time.Time) (*CommitActivity
 	return activity, nil
 }
 
-func AnalyzeRepositories(repoPaths []string, start, end time.Time, mode string) (string, *CombinedCommitActivity) {
+func AnalyzeRepositories(repoPaths []string, start, end time.Time, mode string, aliases DeveloperAliases) (string, *CombinedCommitActivity) {
 	fmt.Printf("Analyzing %d repositories in '%s' mode...\n", len(repoPaths), mode)
 	combinedActivity := &CombinedCommitActivity{}
 
@@ -260,9 +320,9 @@ func AnalyzeRepositories(repoPaths []string, start, end time.Time, mode string) 
 
 		// Choose analysis method based on mode
 		if mode == "commits" {
-			activity, err = AnalyzeCommitsInRange(repoPath, start, end)
+			activity, err = AnalyzeCommitsInRange(repoPath, start, end, aliases)
 		} else if mode == "lines" {
-			activity, err = AnalyzeLinesInRange(repoPath, start, end)
+			activity, err = AnalyzeLinesInRange(repoPath, start, end, aliases)
 		}
 
 		if err != nil {

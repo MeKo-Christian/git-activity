@@ -1,7 +1,11 @@
 package cmd
 
 import (
+	"bufio"
+	"git-activity/internal"
 	"log"
+	"os"
+	"strings"
 	"time"
 )
 
@@ -28,4 +32,35 @@ func parseDateRange(startStr, endStr string) (time.Time, time.Time) {
 	}
 
 	return start, end
+}
+
+// ParseDeveloperAliases parses a file into a map of aliases to developer names
+func parseDeveloperAliases(filename string) (internal.DeveloperAliases, error) {
+	aliases := internal.DeveloperAliases{}
+
+	file, err := os.Open(filename)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := scanner.Text()
+		parts := strings.Split(line, "|")
+		if len(parts) < 2 {
+			continue // Skip invalid lines
+		}
+
+		name := parts[0]
+		for _, alias := range parts[1:] {
+			aliases[strings.ToLower(strings.TrimSpace(alias))] = name
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+
+	return aliases, nil
 }
