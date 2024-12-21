@@ -37,8 +37,8 @@ var analyzeCmd = &cobra.Command{
 			log.Fatalf("Invalid mode '%s'. Supported modes are 'commits' or 'lines'.", mode)
 		}
 
-		if bars != "byRepo" && bars != "byDev" && bars != "" {
-			log.Fatalf("Invalid bars mode '%s'. Supported modes are 'byRepo', 'byDev', or 'flat'.", bars)
+		if bars != "repo" && bars != "dev" && bars != "repository" && bars != "developer" && bars != "" {
+			log.Fatalf("Invalid bars mode '%s'. Supported modes are 'repository', 'developer', or 'flat'.", bars)
 		}
 
 		// Parse developer aliases
@@ -54,18 +54,9 @@ var analyzeCmd = &cobra.Command{
 		// Perform analysis
 		outputPrefix, combinedActivity := internal.AnalyzeRepositories(args, start, end, mode, aliases)
 
-		if grouped {
-			// Generate grouped bar charts
-			err := internal.GenerateGroupedCharts(combinedActivity, mode, bars, outputPrefix, format, aliases)
-			if err != nil {
-				log.Fatalf("Error generating charts: %v", err)
-			}
-		} else {
-			// Generate standard charts
-			err := internal.GenerateCharts(combinedActivity, mode, outputPrefix, format, aliases)
-			if err != nil {
-				log.Fatalf("Error generating charts: %v", err)
-			}
+		err := internal.GenerateCharts(combinedActivity, grouped, mode, bars, outputPrefix, format, aliases)
+		if err != nil {
+			log.Fatalf("Error generating charts: %v", err)
 		}
 
 		fmt.Println("Repository analysis complete.")
